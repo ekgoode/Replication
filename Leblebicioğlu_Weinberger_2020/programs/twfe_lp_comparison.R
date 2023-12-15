@@ -83,14 +83,12 @@ df[, lnunemp := log(unemp)]
 df[, lnhpi := log(HPI)]
 
 # Merging with another data table (assuming banking_law_indicators is a data.table)
-blaw_df[,state_name := NULL]
+blaw_df[, state_name := NULL]
 df <- merge(df, blaw_df, by = c("state_abbrev", "year"), all.x = TRUE)
 
 # Creating additional variables
 df[, zero := 0]
 df[, zero2 := 0]
-
-
 
 # Run analysis Leblebicioğlu & Weinberger (2020) ---------------------------------------------------
 formula <- as.formula(
@@ -243,5 +241,83 @@ ggsave(
 )
 
 # Run analysis Dube, Girardi, Jorda, & Taylor (2023) -----------------------------------------------
+# Set panel
+df <- as.data.table(df)
+df <- panel(df, ~ year + statenum, time.step="consecutive")
 
+# Make LHS variable
+for (i in 0:9) {
+    df[,paste0("laborsh_private",i) := shift(laborsh_private,n=i,type="lead") - shift(laborsh_private,n=1,type="lag"),]
+    df[,paste0("intbanking_y0T",i) := shift(intbanking_y0,n=i,type="lead"),]
+    df[,paste0("intbranching_y0",i) := shift(intbranching_y0,n=i,type="lead"),]
 
+}
+for (i in 1:9) {
+    df[,paste0("laborsh_private_neg",i) := shift(laborsh_private,n=i,type="lag") - shift(laborsh_private,n=1,type="lag"),]
+    df[,paste0("intbanking_y0T_neg",i) := shift(intbanking_y0,n=i,type="lag"),]
+    df[,,paste0("intbranching_y0",i) := shift(intbranching_y0,n=i,type="lag"),]
+
+}
+
+# Make "Unclean" control indicator
+#for (i in -9:9) {
+
+#    treatment_name <- ifelse(i < 0, paste0("intbanking_y0T_neg", abs(i)), paste0("intbanking_y0T",i))
+
+#    df[,paste0("UC",i) := 1]
+#    df[ (intbanking_y0 == 1) | get(treatment_name) == 0, paste0("UC",i) := 0]
+
+#	}
+
+# Estimate LP
+for (i in -9:9) {
+    LHS_name <- ifelse(i < 0, paste0("`laborsh_private_neg", abs(i), "`"), paste0("`laborsh_private",i,"`"))
+    treatment_name <- ifelse(i < 0, paste0("intbanking_y0T_neg",abs(i)), paste0("intbanking_y0T",i))
+    formula <- as.formula(
+        paste0(
+            LHS_name,
+            "~ l(", LHS_name," , 1:5)",
+            " + intbanking_y0 + intbranching_y0 - 1"
+        )
+    )
+
+    lpdid <- feols(formula, df[intbanking_y0==1 | get(treatment_name)==0,])
+
+    coefs <- as.data.frame(summary(lpdid)$coeftable)
+    coefs$variable <- rownames(coefs)
+    rownames(coefs) <- NULL
+
+    coefs <- coefs %>% 
+    filter(variable == "intbanking_y0") %>%
+    mutate(h = i)
+
+    if (i == -9) {
+        coefs_final <- coefs
+    } else {
+        coefs_final <- rbind(coefs_final,coefs)
+    }
+}
+
+coefs_final <- coefs_final %>%
+mutate(
+    upper95 = Estimate + (1.96 * `Std. Error`),
+    lower95 = Estimate - (1.96 * `Std. Error`),
+    upper90 = Estimate + (1.645 * `Std. Error`),
+    lower90 = Estimate - (1.645 * `Std. Error`)
+)
+
+ggplot(data = coefs_final) +
+    geom_ribbon(aes(x=h,ymin=lower90,ymax=upper90), fill = 'grey70', alpha=0.5) +
+    geom_ribbon(aes(x=h,ymin=lower95,ymax=upper95), fill='grey80',alpha=0.5) +
+    geom_line(aes(x=h,y=Estimate),color="#21918c", linewidth=1.2) +
+    geom_hline(yintercept = 0, linewidth = 1, linetype = "dashed") +
+    scale_x_continuous(breaks = seq(-9,9,by=1), limits=c(-9,9)) +
+    labs(x="Years Before and After Reform",y="Coefficients",title="Inter-state Banking, Dube, Girardi, Jorda, & Taylor (2023)") + 
+    theme(
+    panel.grid.major = element_line(color = "grey90", linetype = "solid"),
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(linetype = "solid", fill = NA, color = "black"),
+    axis.title = element_text(size = 18, face = "bold", color = "black"),
+    axis.text = element_text(size = 16, color = "black"),
+    plot.title = element_text(size = 18, face="bold",color="black")
+)
